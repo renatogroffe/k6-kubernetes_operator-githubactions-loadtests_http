@@ -1,0 +1,104 @@
+name: loadtests-k6-kubernetes
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+env:
+  EndpointGetTest: 'PREENCHA O ENDPOINT'
+  LoadTestsScript: 'tests-contagem.js'
+  TestsDirectory: './src'
+  NamespaceTests: 'apicontagem-loadtests-${{ github.run_number }}'
+
+jobs:
+  loadtests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exibir conteudo do script de testes antes dos replaces
+        run: cat ${{ env.TestsDirectory }}/${{ env.LoadTestsScript }}
+
+      - name: Atualizar script de testes com após replaces
+        uses: cschleiden/replace-tokens@v1
+        with:
+          files: ${{ env.TestsDirectory }}/${{ env.LoadTestsScript }}
+
+      - name: Exibir conteudo do script de testes apos replaces
+        run: cat ${{ env.TestsDirectory }}/${{ env.LoadTestsScript }}
+
+      - name: Kubernetes Set Context
+        uses: Azure/k8s-set-context@v3.0
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Exibindo namespaces existentes
+        run: kubectl get namespaces
+
+      - name: Criar namespace para os testes
+        run: |
+          kubectl create namespace ${{ env.NamespaceTests }}
+
+      - name: Verificar se o namespace foi criado
+        run: kubectl get namespaces
+
+      - name: Criar ConfigMap com o script de teste
+        run: |
+          cd ${{ env.TestsDirectory }}
+          kubectl create configmap tests-contagem --from-file ${{ env.LoadTestsScript }} -n ${{ env.NamespaceTests }}
+
+      - name: Aplicar script de testes de carga iniciando o processamento
+        run: |
+          cd ${{ env.TestsDirectory }}
+          kubectl apply -f run-k6-apicontagem.yaml -n ${{ env.NamespaceTests }}
+
+      - name: Aguardar conclusão dos jobs de teste
+        run: sleep 240s
+
+      - name: Obter logs dos jobs de teste
+        run: |
+          echo "* Logs dos jobs de teste"
+          kubectl get jobs -n ${{ env.NamespaceTests }}
+          for job in $(kubectl get jobs -n ${{ env.NamespaceTests }} -o jsonpath='{.items[*].metadata.name}'); do
+            echo
+            echo
+            echo
+            echo "** Logs do job: $job"
+            kubectl logs job/$job -n ${{ env.NamespaceTests }}
+          done
+
+      - name: Obter logs dos jobs de teste e salvar em Markdown
+        run: |
+          {
+            echo "# Logs dos jobs de teste"
+            kubectl get jobs -n ${{ env.NamespaceTests }}
+            for job in $(kubectl get jobs -n ${{ env.NamespaceTests }} -o jsonpath='{.items[*].metadata.name}'); do
+              echo
+              echo
+              echo
+              echo "## Logs do job: $job"
+              kubectl logs job/$job -n ${{ env.NamespaceTests }}
+            done
+          } > jobs-logs.md
+
+      - name: Remover namespace de testes
+        run: |
+          kubectl delete namespace ${{ env.NamespaceTests }}
+
+      - name: Verificar arquivos no diretório raiz
+        run: |
+          pwd
+          echo
+          echo
+          ls -l
+
+      - uses: dtinth/markdown-report-action@v1
+        with:
+          name: k6 + Kubernetes Load Tests Logs
+          title: k6 + Kubernetes Load Tests Logs - API de Contagem
+          body-file: jobs-logs.md
